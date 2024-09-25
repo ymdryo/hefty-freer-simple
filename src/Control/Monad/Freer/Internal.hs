@@ -128,6 +128,10 @@ send :: Member eff ef => eff a -> Eff eh ef a
 send t = E (Right $ inj t) (tsingleton Val)
 {-# INLINE send #-}
 
+sendH :: (MemberH eff eh, HFunctor eff) => eff (Eff eh ef) a -> Eff eh ef a
+sendH t = E (Left $ injH t) (tsingleton Val)
+{-# INLINE sendH #-}
+
 -- | Identical to 'send', but specialized to the final effect in @eh ef@ to
 -- assist type inference. This is useful for running actions in a monad
 -- transformer stack used in conjunction with 'runM'.
