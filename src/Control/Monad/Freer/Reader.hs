@@ -28,9 +28,12 @@ module Control.Monad.Freer.Reader
 
     -- * Example 2: Modifying Reader Content With @local@
     -- $localExample
+  , runLocal
+  , Local(..)
   ) where
 
-import Control.Monad.Freer (Eff, Member, interpose, interpret, send, interposeRec, interpretRec)
+import Control.Monad.Freer (Eff, Member, interpose, interpret, send, interposeRec, interpretRec, HFunctor, hfmap, interpretRecH)
+import Control.Natural (type (~>))
 
 -- | Represents shared immutable environment of type @(e :: *)@ which is made
 -- available to effectful computation.
@@ -67,6 +70,16 @@ local
 local f m = do
   r <- asks f
   interposeRec @(Reader r) (\Ask -> pure r) m
+
+data Local r m a where
+    Local :: (r -> r) -> m a -> Local r m a
+
+instance HFunctor (Local r) where
+    hfmap phi (Local f m) = Local f (phi m)
+    {-# INLINE hfmap #-}
+
+runLocal :: forall r eh ef. Member (Reader r) ef => Eff (Local r ': eh) ef ~> Eff eh ef
+runLocal = interpretRecH $ \(Local f m) -> local f m
 
 -- $simpleReaderExample
 --

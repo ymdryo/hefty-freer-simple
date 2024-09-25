@@ -185,6 +185,10 @@ interpretRec :: forall e ef eh. (e ~> Eff eh ef) -> Eff eh (e ': ef) ~> Eff eh e
 interpretRec f = interpretRecK @_ @'[] (\e -> (f e >>=))
 {-# INLINE interpretRec #-}
 
+interpretRecH :: forall e ef eh. HFunctor e => (e (Eff eh ef) ~> Eff eh ef) -> Eff (e ': eh) ef ~> Eff eh ef
+interpretRecH f = interpretRecKH @_ @'[] @'[] (\e -> (f e >>=))
+{-# INLINE interpretRecH #-}
+
 -- | Like 'interpret', but instead of handling the effect, allows responding to
 -- the effect while leaving it unhandled.
 interpose :: forall eff effs. Member eff effs => (eff ~> Eff '[] effs) -> Eff '[] effs ~> Eff '[] effs

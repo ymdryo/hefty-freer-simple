@@ -17,9 +17,12 @@ module Control.Monad.Freer.Error
   , runError
   , catchError
   , handleError
+  , runCatch
+  , Catch(..)
   ) where
 
-import Control.Monad.Freer (Eff, Member, interposeWith, interpretWith, send, interpretK)
+import Control.Monad.Freer (Eff, Member, interposeWith, interpretWith, send, interpretK, interpretRecH, HFunctor, hfmap)
+import Control.Natural (type (~>))
 
 -- | Exceptions of the type @e :: *@ with no resumption.
 newtype Error e r where
@@ -51,3 +54,13 @@ handleError
   -> (e -> Eff '[] effs a)
   -> Eff '[] effs a
 handleError m handle = interpretWith (\(Error e) _ -> handle e) m
+
+data Catch e m r where
+    Catch :: m a -> (e -> m a) -> Catch e m a
+
+instance HFunctor (Catch e) where
+    hfmap f (Catch m hdl) = Catch (f m) (f . hdl)
+    {-# INLINE hfmap #-}
+
+runCatch :: forall e ef. Member (Error e) ef => Eff '[Catch e] ef ~> Eff '[] ef
+runCatch = interpretRecH $ \(Catch m hdl) -> catchError m hdl
