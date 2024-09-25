@@ -21,35 +21,38 @@ import Control.Monad.Freer.Internal
   ( Eff(..)
   , Member
   , NonDet(..)
-  , handleRelay
   , prj
   , qApp
   , qComp
   , tsingleton
   )
+import Control.Monad.Freer (interpretK)
+import Control.Monad.Freer (exhaustH)
 
 -- | A handler for nondeterminstic effects.
 makeChoiceA
   :: Alternative f
-  => Eff (NonDet ': effs) a
-  -> Eff effs (f a)
-makeChoiceA = handleRelay (pure . pure) $ \m k ->
+  => Eff '[] (NonDet ': effs) a
+  -> Eff '[] effs (f a)
+makeChoiceA = interpretK @_ @'[] (pure . pure) $ \m k ->
   case m of
     MZero -> pure empty
     MPlus -> (<|>) <$> k True <*> k False
 
 msplit
   :: Member NonDet effs
-  => Eff effs a
-  -> Eff effs (Maybe (a, Eff effs a))
+  => Eff '[] effs a
+  -> Eff '[] effs (Maybe (a, Eff '[] effs a))
 msplit = loop []
   where
     loop jq (Val x) = pure (Just (x, msum jq))
-    loop jq (E u q) = case prj u of
-        Just MZero -> case jq of
-          []      -> pure Nothing
-          (j:jq') -> loop jq' j
-        Just MPlus -> loop (qApp q False : jq) (qApp q True)
-        Nothing    -> E u (tsingleton k)
+    loop jq (E u q) = case u of
+        Right u' -> case prj u' of
+            Just MZero -> case jq of
+                []      -> pure Nothing
+                (j:jq') -> loop jq' j
+            Just MPlus -> loop (qApp q False : jq) (qApp q True)
+            Nothing    -> E u (tsingleton k)
+        Left u' -> exhaustH u'
       where
         k = qComp q (loop jq)

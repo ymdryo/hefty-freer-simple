@@ -19,36 +19,35 @@ module Control.Monad.Freer.Error
   , handleError
   ) where
 
-import Control.Monad.Freer (Eff, Member, interposeWith, interpretWith, send)
-import Control.Monad.Freer.Internal (handleRelay)
+import Control.Monad.Freer (Eff, Member, interposeWith, interpretWith, send, interpretK)
 
 -- | Exceptions of the type @e :: *@ with no resumption.
 newtype Error e r where
   Error :: e -> Error e r
 
 -- | Throws an error carrying information of type @e :: *@.
-throwError :: forall e effs a. Member (Error e) effs => e -> Eff effs a
+throwError :: forall e effs eh a. Member (Error e) effs => e -> Eff eh effs a
 throwError e = send (Error e)
 
 -- | Handler for exception effects. If there are no exceptions thrown, returns
 -- 'Right'. If exceptions are thrown and not handled, returns 'Left', while
 -- interrupting the execution of any other effect handlers.
-runError :: forall e effs a. Eff (Error e ': effs) a -> Eff effs (Either e a)
-runError = handleRelay (pure . Right) (\(Error e) _ -> pure (Left e))
+runError :: forall e effs a. Eff '[] (Error e ': effs) a -> Eff '[] effs (Either e a)
+runError = interpretK @_ @'[] (pure . Right) (\(Error e) _ -> pure (Left e))
 
 -- | A catcher for Exceptions. Handlers are allowed to rethrow exceptions.
 catchError
   :: forall e effs a
    . Member (Error e) effs
-  => Eff effs a
-  -> (e -> Eff effs a)
-  -> Eff effs a
+  => Eff '[] effs a
+  -> (e -> Eff '[] effs a)
+  -> Eff '[] effs a
 catchError m handle = interposeWith (\(Error e) _ -> handle e) m
 
 -- | A catcher for Exceptions. Handlers are /not/ allowed to rethrow exceptions.
 handleError
   :: forall e effs a
-   . Eff (Error e ': effs) a
-  -> (e -> Eff effs a)
-  -> Eff effs a
+   . Eff '[] (Error e ': effs) a
+  -> (e -> Eff '[] effs a)
+  -> Eff '[] effs a
 handleError m handle = interpretWith (\(Error e) _ -> handle e) m

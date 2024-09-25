@@ -35,10 +35,21 @@ module Data.OpenUnion.Internal where
 import Data.Kind (Type)
 import GHC.TypeLits (TypeError, ErrorMessage(..))
 import Unsafe.Coerce (unsafeCoerce)
+import Control.Natural (type (~>))
+
+type EffectF = Type -> Type
+type EffectH = (Type -> Type) -> EffectF
 
 -- | Open union is a strong sum (existential with an evidence).
-data Union (r :: [Type -> Type]) a where
+data Union (r :: [EffectF]) a where
   Union :: {-# UNPACK #-} !Word -> t a -> Union r a
+
+data UnionH (r :: [EffectH]) (m :: Type -> Type) a where
+  UnionH :: {-# UNPACK #-} !Word -> t n a -> (forall x. n x -> m x) -> UnionH r m a
+
+hfmapUnion :: (forall x. m x -> n x) -> UnionH r m a -> UnionH r n a
+hfmapUnion f (UnionH n a koi) = UnionH n a (f . koi)
+{-# INLINE hfmapUnion #-}
 
 -- | Takes a request of type @t :: * -> *@, and injects it into the 'Union'.
 --
@@ -68,16 +79,26 @@ unsafePrj n (Union n' x)
   | otherwise = Nothing
 {-# INLINE unsafePrj #-}
 
+unsafeInjH :: Word -> t m a -> UnionH r m a
+unsafeInjH n a = UnionH n a id
+{-# INLINE unsafeInjH #-}
+
+unsafePrjH :: HFunctor t => Word -> UnionH r m a -> Maybe (t m a)
+unsafePrjH n (UnionH n' x f)
+  | n == n'   = Just (hfmap f $ unsafeCoerce x)
+  | otherwise = Nothing
+{-# INLINE unsafePrjH #-}
+
 -- | Represents position of element @t :: * -> *@ in a type list
 -- @r :: [* -> *]@.
-newtype P t r = P {unP :: Word}
+newtype P (t :: k) (r :: [k]) = P {unP :: Word}
 
 -- | Find an index of an element @t :: * -> *@ in a type list @r :: [* -> *]@.
 -- The element must exist. The @w :: [* -> *]@ type represents the entire list,
 -- prior to recursion, and it is used to produce better type errors.
 --
 -- This is essentially a compile-time computation without run-time overhead.
-class FindElem (t :: Type -> Type) (r :: [Type -> Type]) where
+class FindElem (t :: k) (r :: [k]) where
   -- | Position of the element @t :: * -> *@ in a type list @r :: [* -> *]@.
   --
   -- Position is computed during compilation, i.e. there is no run-time
@@ -97,7 +118,7 @@ instance {-# OVERLAPPABLE #-} FindElem t r => FindElem t (t' ': r) where
 
 -- | Instance resolution for this class fails with a custom type error
 -- if @t :: * -> *@ is not in the list @r :: [* -> *]@.
-class IfNotFound (t :: Type -> Type) (r :: [Type -> Type]) (w :: [Type -> Type])
+class IfNotFound (t :: k) (r :: [k]) (w :: [k])
 
 -- | If we reach an empty list, that’s a failure, since it means the type isn’t
 -- in the list. For GHC >=8, we can render a custom type error that explicitly
@@ -107,6 +128,16 @@ instance TypeError ('Text "‘" ':<>: 'ShowType t
                     ':$$: 'Text "  ‘" ':<>: 'ShowType w ':<>: 'Text "’"
                     ':$$: 'Text "In the constraint ("
                     ':<>: 'ShowType (Member t w) ':<>: 'Text ")")
+    => IfNotFound t '[] w
+
+-- | If we reach an empty list, that’s a failure, since it means the type isn’t
+-- in the list. For GHC >=8, we can render a custom type error that explicitly
+-- states what went wrong.
+instance TypeError ('Text "‘" ':<>: 'ShowType t
+                    ':<>: 'Text "’ is not a member of the type-level list"
+                    ':$$: 'Text "  ‘" ':<>: 'ShowType w ':<>: 'Text "’"
+                    ':$$: 'Text "In the constraint ("
+                    ':<>: 'ShowType (MemberH t w) ':<>: 'Text ")")
     => IfNotFound t '[] w
 
 instance IfNotFound t (t ': r) w
@@ -129,7 +160,7 @@ instance {-# INCOHERENT #-} IfNotFound t r w
 -- @
 -- 'Member' ('Control.Monad.Freer.State.State' 'Integer') effs => 'Control.Monad.Freer.Eff' effs ()
 -- @
-class FindElem eff effs => Member (eff :: Type -> Type) effs where
+class FindElem eff effs => Member (eff :: EffectF) effs where
   -- This type class is used for two following purposes:
   --
   -- * As a @Constraint@ it guarantees that @t :: * -> *@ is a member of a
@@ -163,6 +194,20 @@ instance (FindElem t r, IfNotFound t r r) => Member t r where
 
   prj = unsafePrj $ unP (elemNo :: P t r)
   {-# INLINE prj #-}
+
+class FindElem eff effs => MemberH (eff :: EffectH) effs where
+  injH :: HFunctor eff => eff m a -> UnionH effs m a
+  prjH :: HFunctor eff => UnionH effs m a -> Maybe (eff m a)
+
+class HFunctor eff where
+    hfmap :: (f ~> g) -> eff f a -> eff g a
+
+instance (FindElem t r, IfNotFound t r r) => MemberH t r where
+  injH = unsafeInjH $ unP (elemNo :: P t r)
+  {-# INLINE injH #-}
+
+  prjH = unsafePrjH $ unP (elemNo :: P t r)
+  {-# INLINE prjH #-}
 
 -- | Orthogonal decomposition of a @'Union' (t ': r) :: * -> *@. 'Right' value
 -- is returned if the @'Union' (t ': r) :: * -> *@ contains @t :: * -> *@, and
@@ -202,18 +247,72 @@ weaken :: Union r a -> Union (any ': r) a
 weaken (Union n a) = Union (n + 1) a
 {-# INLINE weaken #-}
 
+exhaust :: Union '[] a -> r
+exhaust _ = error "unreachable"
+{-# INLINE exhaust #-}
+
+exhaustH :: UnionH '[] m a -> r
+exhaustH _ = error "unreachable"
+{-# INLINE exhaustH #-}
+
 infixr 5 :++:
 type family xs :++: ys where
   '[] :++: ys = ys
   (x ': xs) :++: ys = x ': (xs :++: ys)
 
-class Weakens q where
-  weakens :: Union r a -> Union (q :++: r) a
+weakens :: forall q r a. KnownLen q => Union r a -> Union (q :++: r) a
+weakens (Union n a) = Union (n + reifyLen @_ @q) a
+{-# INLINE weakens #-}
 
-instance Weakens '[] where
-  weakens = id
-  {-# INLINE weakens #-}
+-- | Orthogonal decomposition of a @'Union' (t ': r) :: * -> *@. 'Right' value
+-- is returned if the @'Union' (t ': r) :: * -> *@ contains @t :: * -> *@, and
+-- 'Left' when it doesn't. Notice that 'Left' value contains
+-- @Union r :: * -> *@, i.e. it can not contain @t :: * -> *@.
+--
+-- /O(1)/
+decompH :: HFunctor t => UnionH (t ': r) m a -> Either (UnionH r m a) (t m a)
+decompH (UnionH 0 a koi) = Right $ hfmap koi $ unsafeCoerce a
+decompH (UnionH n a koi) = Left  $ UnionH (n - 1) a koi
+{-# INLINE [2] decompH #-}
 
-instance Weakens xs => Weakens (x ': xs) where
-  weakens u = weaken (weakens @xs u)
-  {-# INLINEABLE weakens #-}
+-- | Specialized version of 'decomp' for efficiency.
+--
+-- /O(1)/
+--
+-- TODO: Check that it actually adds on efficiency.
+decomp0H :: HFunctor t => UnionH '[t] m a -> Either (UnionH '[] m a) (t m a)
+decomp0H (UnionH _ a koi) = Right $ hfmap koi $ unsafeCoerce a
+{-# INLINE decomp0H #-}
+{-# RULES "decomp/singleton"  decompH = decomp0H #-}
+
+-- | Specialised version of 'prj'\/'decomp' that works on an
+-- @'Union' '[t] :: * -> *@ which contains only one specific summand. Hence the
+-- absence of 'Maybe', and 'Either'.
+--
+-- /O(1)/
+extractH :: HFunctor t => UnionH '[t] m a -> t m a
+extractH (UnionH _ a koi) = hfmap koi $ unsafeCoerce a
+{-# INLINE extractH #-}
+
+-- | Inject whole @'Union' r@ into a weaker @'Union' (any ': r)@ that has one
+-- more summand.
+--
+-- /O(1)/
+weakenH :: UnionH r m a -> UnionH (any ': r) m a
+weakenH (UnionH n a koi) = UnionH (n + 1) a koi
+{-# INLINE weakenH #-}
+
+weakensH :: forall q r m a. KnownLen q => UnionH r m a -> UnionH (q :++: r) m a
+weakensH (UnionH n a koi) = UnionH (n + reifyLen @_ @q) a koi
+{-# INLINE weakensH #-}
+
+-- from speff
+class KnownLen (es :: [k]) where
+  -- | Get the length of the list.
+  reifyLen :: Word
+
+instance KnownLen '[] where
+  reifyLen = 0
+
+instance KnownLen es => KnownLen (e ': es) where
+  reifyLen = 1 + reifyLen @_ @es

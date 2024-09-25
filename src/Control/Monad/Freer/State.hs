@@ -41,8 +41,8 @@ module Control.Monad.Freer.State
 
 import Data.Proxy (Proxy)
 
-import Control.Monad.Freer (Eff, Member, send)
-import Control.Monad.Freer.Internal (Arr, handleRelayS, interposeS)
+import Control.Monad.Freer (Eff, Member, send, interposeKS, interpretKS)
+import Control.Monad.Freer.Internal (Arr)
 
 -- | Strict 'State' effects: one can either 'Get' values or 'Put' them.
 data State s r where
@@ -50,35 +50,35 @@ data State s r where
   Put :: !s -> State s ()
 
 -- | Retrieve the current value of the state of type @s :: *@.
-get :: forall s effs. Member (State s) effs => Eff effs s
+get :: forall s effs eh. Member (State s) effs => Eff eh effs s
 get = send Get
 
 -- | Set the current state to a specified value of type @s :: *@.
-put :: forall s effs. Member (State s) effs => s -> Eff effs ()
+put :: forall s effs eh. Member (State s) effs => s -> Eff eh effs ()
 put s = send (Put s)
 
 -- | Modify the current state of type @s :: *@ using provided function
 -- @(s -> s)@.
-modify :: forall s effs. Member (State s) effs => (s -> s) -> Eff effs ()
+modify :: forall s effs eh. Member (State s) effs => (s -> s) -> Eff eh effs ()
 modify f = fmap f get >>= put
 
 -- | Retrieve a specific component of the current state using the provided
 -- projection function.
-gets :: forall s a effs. Member (State s) effs => (s -> a) -> Eff effs a
+gets :: forall s a effs eh. Member (State s) effs => (s -> a) -> Eff eh effs a
 gets f = f <$> get
 
 -- | Handler for 'State' effects.
-runState :: forall s effs a. s -> Eff (State s ': effs) a -> Eff effs (a, s)
-runState s0 = handleRelayS s0 (\s x -> pure (x, s)) $ \s x k -> case x of
+runState :: forall s effs a. s -> Eff '[] (State s ': effs) a -> Eff '[] effs (a, s)
+runState s0 = interpretKS @_ @'[] s0 (\s x -> pure (x, s)) $ \s x k -> case x of
   Get -> k s s
   Put s' -> k s' ()
 
 -- | Run a 'State' effect, returning only the final state.
-execState :: forall s effs a. s -> Eff (State s ': effs) a -> Eff effs s
+execState :: forall s effs a. s -> Eff '[] (State s ': effs) a -> Eff '[] effs s
 execState s = fmap snd . runState s
 
 -- | Run a State effect, discarding the final state.
-evalState :: forall s effs a. s -> Eff (State s ': effs) a -> Eff effs a
+evalState :: forall s effs a. s -> Eff '[] (State s ': effs) a -> Eff '[] effs a
 evalState s = fmap fst . runState s
 
 -- | An encapsulated State handler, for transactional semantics. The global
@@ -90,15 +90,15 @@ evalState s = fmap fst . runState s
 transactionState
   :: forall s effs a
    . Member (State s) effs
-  => Eff effs a
-  -> Eff effs a
+  => Eff '[] effs a
+  -> Eff '[] effs a
 transactionState m = do
     s0 <- get @s
-    (x, s) <- interposeS s0 (\s x -> pure (x, s)) handle m
+    (x, s) <- interposeKS s0 (\s x -> pure (x, s)) handle m
     put s
     pure x
   where
-    handle :: s -> State s v -> (s -> Arr effs v b) -> Eff effs b
+    handle :: s -> State s v -> (s -> Arr '[] effs v b) -> Eff '[] effs b
     handle s x k = case x of
       Get -> k s s
       Put s' -> k s' ()
@@ -109,7 +109,7 @@ transactionState'
   :: forall s effs a
    . Member (State s) effs
   => Proxy s
-  -> Eff effs a
-  -> Eff effs a
+  -> Eff '[] effs a
+  -> Eff '[] effs a
 transactionState' _ = transactionState @s
 {-# INLINE transactionState' #-}

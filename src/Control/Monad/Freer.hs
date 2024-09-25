@@ -166,130 +166,48 @@ Since writing these functions is entirely mechanical, they can be generated
 automatically using Template Haskell; see "Control.Monad.Freer.TH" for more
 details.
 -}
-module Control.Monad.Freer
-  ( -- * Effect Monad
-    Eff
-
-    -- ** Effect Constraints
-    -- | As mentioned in the documentation for 'Eff', it’s rare to actually
-    -- specify a concrete list of effects for an 'Eff' computation, since that
-    -- has two significant downsides:
-    --
-    --   1. It couples the computation to that /specific/ list of effects, so it
-    --      cannot be used in functions that perform a strict superset of
-    --      effects.
-    --
-    --   2. It forces the effects to be handled in a particular order, which
-    --      can make handler code brittle when the list of effects is changed.
-    --
-    -- Fortunately, these restrictions are easily avoided by using
-    -- /effect constraints/, such as 'Member' or 'Members', which decouple a
-    -- computation from a particular concrete list of effects.
-  , Member
-  , Members
-  , LastMember
-
-    -- ** Sending Arbitrary Effects
-  , send
-  , sendM
-
-    -- ** Lifting Effect Stacks
-  , raise
-
-    -- * Handling Effects
-    -- | Once an effectful computation has been produced, it needs to somehow be
-    -- executed. This is where /effect handlers/ come in. Each effect can have
-    -- an arbitrary number of different effect handlers, which can be used to
-    -- interpret the same effects in different ways. For example, it is often
-    -- useful to have two effect handlers: one that uses 'sendM' and
-    -- 'interpretM' to interpret the effect in 'IO', and another that uses
-    -- 'interpret', 'reinterpret', or 'translate' to interpret the effect in an
-    -- entirely pure way for the purposes of testing.
-    --
-    -- This module doesn’t provide any effects or effect handlers (those are in
-    -- their own modules, like "Control.Monad.Freer.Reader" and
-    -- "Control.Monad.Freer.Error"), but it /does/ provide a set of combinators
-    -- for constructing new effect handlers. It also provides the 'run' and
-    -- 'runM' functions for extracting the actual result of an effectful
-    -- computation once all effects have been handled.
-
-    -- ** Running the Eff monad
-  , run
-  , runM
-
-    -- ** Building Effect Handlers
-    -- *** Basic effect handlers
-  , interpret
-  , interpose
-  , subsume
-    -- *** Derived effect handlers
-  , reinterpret
-  , reinterpret2
-  , reinterpret3
-  , reinterpretN
-  , translate
-    -- *** Monadic effect handlers
-  , interpretM
-    -- *** Advanced effect handlers
-  , interpretWith
-  , interposeWith
-
-    -- * Re-exported bindings
-  , type (~>)
-  ) where
+module Control.Monad.Freer (module Control.Monad.Freer, module Control.Monad.Freer.Internal, module Data.OpenUnion) where
 
 import Control.Natural (type (~>))
 
-import qualified Control.Monad.Freer.Internal as Internal
-
 import Control.Monad.Freer.Internal
-  ( Eff
-  , LastMember
-  , Member
-  , Members
-  , Weakens
-  , (:++:)
-  , handleRelay
-  , raise
-  , replaceRelay
-  , replaceRelayN
-  , run
-  , runM
-  , send
-  , sendM
-  )
+import Data.OpenUnion
 
 -- | The simplest way to produce an effect handler. Given a natural
 -- transformation from some effect @eff@ to some effectful computation with
 -- effects @effs@, produces a natural transformation from @'Eff' (eff ': effs)@
 -- to @'Eff' effs@.
-interpret :: forall eff effs. (eff ~> Eff effs) -> Eff (eff ': effs) ~> Eff effs
+interpret :: forall eff effs. (eff ~> Eff '[] effs) -> Eff '[] (eff ': effs) ~> Eff '[] effs
 interpret f = interpretWith (\e -> (f e >>=))
 {-# INLINE interpret #-}
 
+interpretRec :: forall e ef eh. (e ~> Eff eh ef) -> Eff eh (e ': ef) ~> Eff eh ef
+interpretRec f = interpretRecK @_ @'[] (\e -> (f e >>=))
+{-# INLINE interpretRec #-}
+
 -- | Like 'interpret', but instead of handling the effect, allows responding to
 -- the effect while leaving it unhandled.
-interpose :: forall eff effs. Member eff effs => (eff ~> Eff effs) -> Eff effs ~> Eff effs
+interpose :: forall eff effs. Member eff effs => (eff ~> Eff '[] effs) -> Eff '[] effs ~> Eff '[] effs
 interpose f = interposeWith (\e -> (f e >>=))
 {-# INLINE interpose #-}
 
 -- | Interprets an effect in terms of another identical effect. This can be used
 -- to eliminate duplicate effects.
-subsume :: forall eff effs. Member eff effs => Eff (eff ': effs) ~> Eff effs
+subsume :: forall eff effs. Member eff effs => Eff '[] (eff ': effs) ~> Eff '[] effs
 subsume = interpret send
 {-# INLINE subsume #-}
 
 -- | Like 'interpret', but instead of removing the interpreted effect @f@,
 -- reencodes it in some new effect @g@.
-reinterpret :: forall f g effs. (f ~> Eff (g ': effs)) -> Eff (f ': effs) ~> Eff (g ': effs)
-reinterpret f = replaceRelay pure (\e -> (f e >>=))
+reinterpret :: forall f g effs. (f ~> Eff '[] (g ': effs)) -> Eff '[] (f ': effs) ~> Eff '[] (g ': effs)
+reinterpret f = interpretK @_ @'[g] pure (\e -> (f e >>=))
 {-# INLINE reinterpret #-}
 
 -- | Like 'reinterpret', but encodes the @f@ effect in /two/ new effects instead
 -- of just one.
 reinterpret2
   :: forall f g h effs
-   . (f ~> Eff (g ': h ': effs)) -> Eff (f ': effs) ~> Eff (g ': h ': effs)
+   . (f ~> Eff '[] (g ': h ': effs)) -> Eff '[] (f ': effs) ~> Eff '[] (g ': h ': effs)
 reinterpret2 = reinterpretN @[g, h]
 {-# INLINE reinterpret2 #-}
 
@@ -297,8 +215,8 @@ reinterpret2 = reinterpretN @[g, h]
 -- instead of just one.
 reinterpret3
   :: forall f g h i effs
-   . (f ~> Eff (g ': h ': i ': effs))
-  -> Eff (f ': effs) ~> Eff (g ': h ': i ': effs)
+   . (f ~> Eff '[] (g ': h ': i ': effs))
+  -> Eff '[] (f ': effs) ~> Eff '[] (g ': h ': i ': effs)
 reinterpret3 = reinterpretN @[g, h, i]
 {-# INLINE reinterpret3 #-}
 
@@ -308,9 +226,9 @@ reinterpret3 = reinterpretN @[g, h, i]
 -- have to explicitly pick @gs@ using @TypeApplications@. Prefer 'interpret',
 -- 'reinterpret', 'reinterpret2', or 'reinterpret3' where possible.
 reinterpretN
-  :: forall gs f effs. Weakens gs
-  => (f ~> Eff (gs :++: effs)) -> Eff (f ': effs) ~> Eff (gs :++: effs)
-reinterpretN f = replaceRelayN @gs pure (\e -> (f e >>=))
+  :: forall gs f effs. KnownLen gs
+  => (f ~> Eff '[] (gs :++: effs)) -> Eff '[] (f ': effs) ~> Eff '[] (gs :++: effs)
+reinterpretN f = interpretK @_ @gs pure (\e -> (f e >>=))
 {-# INLINE reinterpretN #-}
 
 -- | Runs an effect by translating it into another effect. This is effectively a
@@ -326,7 +244,7 @@ reinterpretN f = replaceRelayN @gs pure (\e -> (f e >>=))
 -- @
 -- 'translate' f = 'reinterpret' ('send' . f)
 -- @
-translate :: forall f g effs. (f ~> g) -> Eff (f ': effs) ~> Eff (g ': effs)
+translate :: forall f g effs. (f ~> g) -> Eff '[] (f ': effs) ~> Eff '[] (g ': effs)
 translate f = reinterpret (send . f)
 {-# INLINE translate #-}
 
@@ -342,7 +260,7 @@ translate f = reinterpret (send . f)
 interpretM
   :: forall eff m effs
    . (Monad m, LastMember m effs)
-  => (eff ~> m) -> Eff (eff ': effs) ~> Eff effs
+  => (eff ~> m) -> Eff '[] (eff ': effs) ~> Eff '[] effs
 interpretM f = interpret (sendM . f)
 {-# INLINE interpretM #-}
 
@@ -359,10 +277,10 @@ interpretM f = interpret (sendM . f)
 -- @
 interpretWith
   :: forall eff effs b
-   . (forall v. eff v -> (v -> Eff effs b) -> Eff effs b)
-  -> Eff (eff ': effs) b
-  -> Eff effs b
-interpretWith = handleRelay pure
+   . (forall v. eff v -> (v -> Eff '[] effs b) -> Eff '[] effs b)
+  -> Eff '[] (eff ': effs) b
+  -> Eff '[] effs b
+interpretWith = interpretK @_ @'[] pure
 {-# INLINE interpretWith #-}
 
 -- | Combines the interposition behavior of 'interpose' with the
@@ -374,8 +292,16 @@ interpretWith = handleRelay pure
 interposeWith
   :: forall eff effs b
    . Member eff effs
-  => (forall v. eff v -> (v -> Eff effs b) -> Eff effs b)
-  -> Eff effs b
-  -> Eff effs b
-interposeWith = Internal.interpose pure
+  => (forall v. eff v -> (v -> Eff '[] effs b) -> Eff '[] effs b)
+  -> Eff '[] effs b
+  -> Eff '[] effs b
+interposeWith = interposeK pure
 {-# INLINE interposeWith #-}
+
+interposeRec :: forall e ef eh. Member e ef => (e ~> Eff eh ef) -> Eff eh ef ~> Eff eh ef
+interposeRec f = interposeRecK (\e -> (f e >>=))
+{-# INLINE interposeRec #-}
+
+interposeRecH :: forall e ef eh. (MemberH e eh, HFunctor e) => (e (Eff eh ef) ~> Eff eh ef) -> Eff eh ef ~> Eff eh ef
+interposeRecH f = interposeRecKH (\e -> (f e >>=))
+{-# INLINE interposeRecH #-}

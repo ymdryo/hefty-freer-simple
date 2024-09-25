@@ -26,50 +26,7 @@
 -- * Functions for facilitating the construction of effects and their handlers.
 --
 -- Using <http://okmij.org/ftp/Haskell/extensible/Eff1.hs> as a starting point.
-module Control.Monad.Freer.Internal
-  ( -- * Effect Monad
-    Eff(..)
-  , Arr
-  , Arrs
-
-    -- ** Open Union
-    --
-    -- | Open Union (type-indexed co-product) of effects.
-  , module Data.OpenUnion
-
-    -- ** Fast Type-aligned Queue
-    --
-    -- | Fast type-aligned queue optimized to effectful functions of type
-    -- @(a -> m b)@.
-  , module Data.FTCQueue
-
-    -- ** Sending Arbitrary Effect
-  , send
-  , sendM
-
-    -- ** Lifting Effect Stacks
-  , raise
-
-    -- * Handling Effects
-  , run
-  , runM
-
-    -- ** Building Effect Handlers
-  , handleRelay
-  , handleRelayS
-  , interpose
-  , interposeS
-  , replaceRelay
-  , replaceRelayS
-  , replaceRelayN
-
-    -- *** Low-level Functions for Building Effect Handlers
-  , qApp
-  , qComp
-
-    -- ** Nondeterminism Effect
-  , NonDet(..)
-  ) where
+module Control.Monad.Freer.Internal (module Control.Monad.Freer.Internal, module Data.OpenUnion, module Data.FTCQueue) where
 
 import Control.Applicative (Alternative(..))
 import Control.Monad (MonadPlus(..))
@@ -78,16 +35,18 @@ import Control.Monad.IO.Class (MonadIO, liftIO)
 
 import Data.FTCQueue
 import Data.OpenUnion
+import Control.Natural (type (~>))
+import Data.Bifunctor (bimap, first)
 
 -- | Effectful arrow type: a function from @a :: *@ to @b :: *@ that also does
 -- effects denoted by @effs :: [* -> *]@.
-type Arr effs a b = a -> Eff effs b
+type Arr eh ef a b = a -> Eff eh ef b
 
 -- | An effectful function from @a :: *@ to @b :: *@ that is a composition of
 -- several effectful functions. The paremeter @effs :: [* -> *]@ describes the
 -- overall effect. The composition members are accumulated in a type-aligned
 -- queue.
-type Arrs effs a b = FTCQueue (Eff effs) a b
+type Arrs eh ef a b = FTCQueue (Eff eh ef) a b
 
 -- | The 'Eff' monad provides the implementation of a computation that performs
 -- an arbitrary set of algebraic effects. In @'Eff' effs a@, @effs@ is a
@@ -113,16 +72,16 @@ type Arrs effs a b = FTCQueue (Eff effs) a b
 -- This abstraction allows the computation to be used in functions that may
 -- perform other effects, and it also allows the effects to be handled in any
 -- order.
-data Eff effs a
+data Eff eh ef a
   = Val a
   -- ^ Pure value (@'return' = 'pure' = 'Val'@).
-  | forall b. E (Union effs b) (Arrs effs b a)
+  | forall b. E (Either (UnionH eh (Eff eh ef) b) (Union ef b)) (Arrs eh ef b a)
   -- ^ Sending a request of type @Union effs@ with the continuation
   -- @'Arrs' r b a@.
 
 -- | Function application in the context of an array of effects,
--- @'Arrs' effs b w@.
-qApp :: Arrs effs b w -> b -> Eff effs w
+-- @'Arrs' eh ef b w@.
+qApp :: Arrs eh ef b w -> b -> Eff eh ef w
 qApp q' x = case tviewl q' of
   TOne k  -> k x
   k :| t -> case k x of
@@ -131,15 +90,15 @@ qApp q' x = case tviewl q' of
 
 -- | Composition of effectful arrows ('Arrs'). Allows for the caller to change
 -- the effect environment, as well.
-qComp :: Arrs effs a b -> (Eff effs b -> Eff effs' c) -> Arr effs' a c
+qComp :: Arrs eh ef a b -> (Eff eh ef b -> Eff eh' ef' c) -> Arr eh' ef' a c
 qComp g h a = h $ qApp g a
 
-instance Functor (Eff effs) where
+instance Functor (Eff eh ef) where
   fmap f (Val x) = Val (f x)
   fmap f (E u q) = E u (q |> (Val . f))
   {-# INLINE fmap #-}
 
-instance Applicative (Eff effs) where
+instance Applicative (Eff eh ef) where
   pure = Val
   {-# INLINE pure #-}
 
@@ -148,16 +107,16 @@ instance Applicative (Eff effs) where
   E u q <*> m     = E u (q |> (`fmap` m))
   {-# INLINE (<*>) #-}
 
-instance Monad (Eff effs) where
+instance Monad (Eff eh ef) where
   Val x >>= k = k x
   E u q >>= k = E u (q |> k)
   {-# INLINE (>>=) #-}
 
-instance (MonadBase b m, LastMember m effs) => MonadBase b (Eff effs) where
+instance (MonadBase b m, LastMember m ef) => MonadBase b (Eff eh ef) where
   liftBase = sendM . liftBase
   {-# INLINE liftBase #-}
 
-instance (MonadIO m, LastMember m effs) => MonadIO (Eff effs) where
+instance (MonadIO m, LastMember m ef) => MonadIO (Eff eh ef) where
   liftIO = sendM . liftIO
   {-# INLINE liftIO #-}
 
@@ -165,14 +124,14 @@ instance (MonadIO m, LastMember m effs) => MonadIO (Eff effs) where
 -- algebra (see the module documentation for "Control.Monad.Freer"), to an
 -- effectful computation. This is used to connect the definition of an effect to
 -- the 'Eff' monad so that it can be used and handled.
-send :: Member eff effs => eff a -> Eff effs a
-send t = E (inj t) (tsingleton Val)
+send :: Member eff ef => eff a -> Eff eh ef a
+send t = E (Right $ inj t) (tsingleton Val)
 {-# INLINE send #-}
 
--- | Identical to 'send', but specialized to the final effect in @effs@ to
+-- | Identical to 'send', but specialized to the final effect in @eh ef@ to
 -- assist type inference. This is useful for running actions in a monad
 -- transformer stack used in conjunction with 'runM'.
-sendM :: (Monad m, LastMember m effs) => m a -> Eff effs a
+sendM :: (Monad m, LastMember m ef) => m a -> Eff eh ef a
 sendM = send
 {-# INLINE sendM #-}
 
@@ -194,7 +153,7 @@ sendM = send
 --   'Data.Function.&' runEff2 eff2Arg1 eff2Arg2
 --   'Data.Function.&' 'run'
 -- @
-run :: Eff '[] a -> a
+run :: Eff '[] '[] a -> a
 run (Val x) = x
 run _       = error "Internal:run - This (E) should never happen"
 
@@ -203,154 +162,307 @@ run _       = error "Internal:run - This (E) should never happen"
 -- list, which must be a monad. The value returned is a computation in that
 -- monad, which is useful in conjunction with 'sendM' or 'liftBase' for plugging
 -- in traditional transformer stacks.
-runM :: Monad m => Eff '[m] a -> m a
+runM :: Monad m => Eff '[] '[m] a -> m a
 runM (Val x) = return x
-runM (E u q) = case extract u of
+runM (E (Right u) q) = case extract u of
   mb -> mb >>= runM . qApp q
+runM (E (Left _) _) = error "unreachable"
   -- The other case is unreachable since Union [] a cannot be constructed.
   -- Therefore, run is a total function if its argument terminates.
 
--- | Like 'replaceRelay', but with support for an explicit state to help
--- implement the interpreter.
-replaceRelayS
-  :: s
-  -> (s -> a -> Eff (v ': effs) w)
-  -> (forall x. s -> t x -> (s -> Arr (v ': effs) x w) -> Eff (v ': effs) w)
-  -> Eff (t ': effs) a
-  -> Eff (v ': effs) w
-replaceRelayS s' pure' bind = loop s'
-  where
-    loop s (Val x)  = pure' s x
-    loop s (E u' q) = case decomp u' of
-        Right x -> bind s x k
-        Left  u -> E (weaken u) (tsingleton (k s))
-      where
-        k s'' x = loop s'' $ qApp q x
-{-# INLINE replaceRelayS #-}
-
--- | Interpret an effect by transforming it into another effect on top of the
--- stack. The primary use case of this function is allow interpreters to be
--- defined in terms of other ones without leaking intermediary implementation
--- details through the type signature.
-replaceRelay
-  :: (a -> Eff (v ': effs) w)
-  -> (forall x. t x -> Arr (v ': effs) x w -> Eff (v ': effs) w)
-  -> Eff (t ': effs) a
-  -> Eff (v ': effs) w
-replaceRelay pure' bind = loop
-  where
-    loop (Val x)  = pure' x
-    loop (E u' q) = case decomp u' of
-        Right x -> bind x k
-        Left  u -> E (weaken u) (tsingleton k)
-      where
-        k = qComp q loop
-{-# INLINE replaceRelay #-}
-
-replaceRelayN
-  :: forall gs t a effs w
-   . Weakens gs
-  => (a -> Eff (gs :++: effs) w)
-  -> (forall x. t x -> Arr (gs :++: effs) x w -> Eff (gs :++: effs) w)
-  -> Eff (t ': effs) a
-  -> Eff (gs :++: effs) w
-replaceRelayN pure' bind = loop
-  where
-    loop :: Eff (t ': effs) a -> Eff (gs :++: effs) w
-    loop (Val x)  = pure' x
-    loop (E u' (q :: Arrs (t ': effs) b a)) = case decomp u' of
-        Right x -> bind x k
-        Left  u -> E (weakens @gs u) (tsingleton k)
-      where
-        k :: Arr (gs :++: effs) b w
-        k = qComp q loop
-{-# INLINE replaceRelayN #-}
-
--- | Given a request, either handle it or relay it.
-handleRelay
-  :: (a -> Eff effs b)
-  -- ^ Handle a pure value.
-  -> (forall v. eff v -> Arr effs v b -> Eff effs b)
-  -- ^ Handle a request for effect of type @eff :: * -> *@.
-  -> Eff (eff ': effs) a
-  -> Eff effs b
-  -- ^ Result with effects of type @eff :: * -> *@ handled.
-handleRelay ret h = loop
-  where
-    loop (Val x)  = ret x
-    loop (E u' q) = case decomp u' of
-        Right x -> h x k
-        Left  u -> E u (tsingleton k)
-      where
-        k = qComp q loop
-{-# INLINE handleRelay #-}
-
--- | Parameterized 'handleRelay'. Allows sending along some state of type
--- @s :: *@ to be handled for the target effect, or relayed to a handler that
--- can- handle the target effect.
-handleRelayS
-  :: s
-  -> (s -> a -> Eff effs b)
-  -- ^ Handle a pure value.
-  -> (forall v. s -> eff v -> (s -> Arr effs v b) -> Eff effs b)
-  -- ^ Handle a request for effect of type @eff :: * -> *@.
-  -> Eff (eff ': effs) a
-  -> Eff effs b
-  -- ^ Result with effects of type @eff :: * -> *@ handled.
-handleRelayS s' ret h = loop s'
+interpretKS
+  :: forall t gs s eh' ef w a. KnownLen gs =>
+     s
+  -> (s -> a -> Eff eh' (gs :++: ef) w)
+  -> (forall x. s -> t x -> (s -> Arr eh' (gs :++: ef) x w) -> Eff eh' (gs :++: ef) w)
+  -> Eff '[] (t ': ef) a
+  -> Eff eh' (gs :++: ef) w
+interpretKS s' ret hdl = loop s'
   where
     loop s (Val x)  = ret s x
-    loop s (E u' q) = case decomp u' of
-        Right x -> h s x k
-        Left  u -> E u (tsingleton (k s))
+    loop s (E u' q) =
+        case u' of
+            Right u'' -> case decomp u'' of
+                Right x -> hdl s x k
+                Left  u -> E (Right $ weakens @gs u) (tsingleton (k s))
+            Left u -> exhaustH u
       where
         k s'' x = loop s'' $ qApp q x
-{-# INLINE handleRelayS #-}
+{-# INLINE interpretKS #-}
 
--- | Intercept the request and possibly reply to it, but leave it unhandled.
-interpose
-  :: Member eff effs
-  => (a -> Eff effs b)
-  -> (forall v. eff v -> Arr effs v b -> Eff effs b)
-  -> Eff effs a
-  -> Eff effs b
-interpose ret h = loop
+interpretK
+  :: forall t gs eh' ef w a. KnownLen gs =>
+     (a -> Eff eh' (gs :++: ef) w)
+  -> (forall x. t x -> Arr eh' (gs :++: ef) x w -> Eff eh' (gs :++: ef) w)
+  -> Eff '[] (t ': ef) a
+  -> Eff eh' (gs :++: ef) w
+interpretK ret hdl = loop
   where
-    loop (Val x) = ret x
-    loop (E u q) = case prj u of
-        Just x -> h x k
-        _      -> E u (tsingleton k)
+    loop (Val x)  = ret x
+    loop (E u' q) =
+        case u' of
+            Right u'' -> case decomp u'' of
+                Right x -> hdl x k
+                Left  u -> E (Right $ weakens @gs u) (tsingleton k)
+            Left u -> exhaustH u
       where
-        k = qComp q loop
-{-# INLINE interpose #-}
+        k x = loop $ qApp q x
+{-# INLINE interpretK #-}
 
--- | Like 'interpose', but with support for an explicit state to help implement
--- the interpreter.
-interposeS
-  :: Member eff effs
-  => s
-  -> (s -> a -> Eff effs b)
-  -> (forall v. s -> eff v -> (s -> Arr effs v b) -> Eff effs b)
-  -> Eff effs a
-  -> Eff effs b
-interposeS s' ret h = loop s'
+interpretKSH
+  :: forall t gs s eh' ef w a. (HFunctor t, KnownLen gs) =>
+     s
+  -> (s -> a -> Eff eh' (gs :++: ef) w)
+  -> (forall x. s -> t (Eff '[t] ef) x -> (s -> Arr eh' (gs :++: ef) x w) -> Eff eh' (gs :++: ef) w)
+  -> Eff '[t] ef a
+  -> Eff eh' (gs :++: ef) w
+interpretKSH s' ret elb = loop s'
+  where
+    loop s (Val x)  = ret s x
+    loop s (E u' q) =
+        case u' of
+            Right u'' -> E (Right $ weakens @gs u'') (tsingleton (k s))
+            Left u -> elb s (extractH u) k
+      where
+        k s'' x = loop s'' $ qApp q x
+{-# INLINE interpretKSH #-}
+
+interpretKH
+  :: forall t gs eh' ef w a. (HFunctor t, KnownLen gs) =>
+     (a -> Eff eh' (gs :++: ef) w)
+  -> (forall x. t (Eff '[t] ef) x -> Arr eh' (gs :++: ef) x w -> Eff eh' (gs :++: ef) w)
+  -> Eff '[t] ef a
+  -> Eff eh' (gs :++: ef) w
+interpretKH ret elb = loop
+  where
+    loop (Val x)  = ret x
+    loop (E u' q) =
+        case u' of
+            Right u'' -> E (Right $ weakens @gs u'') (tsingleton k)
+            Left u -> elb (extractH u) k
+      where
+        k x = loop $ qApp q x
+{-# INLINE interpretKH #-}
+
+interpretRecKS
+  :: forall t gs s eh ef. KnownLen gs =>
+     s
+  -> (forall x r. s -> t x -> (s -> Arr eh (gs :++: ef) x r) -> Eff eh (gs :++: ef) r)
+  -> Eff eh (t ': ef) ~> Eff eh (gs :++: ef)
+interpretRecKS s' hdl = loop s'
+  where
+    loop :: s -> Eff eh (t ': ef) ~> Eff eh (gs :++: ef)
+    loop _ (Val x)  = pure x
+    loop s (E u' q) =
+        case u' of
+            Right u'' -> case decomp u'' of
+                Right x -> hdl s x k
+                Left  u -> E (Right $ weakens @gs u) (tsingleton (k s))
+            Left u -> E (Left $ hfmapUnion (loop s) u) (tsingleton (k s))
+      where
+        k s'' x = loop s'' $ qApp q x
+{-# INLINE interpretRecKS #-}
+
+interpretRecK
+  :: forall t gs eh ef. KnownLen gs =>
+     (forall x r. t x -> Arr eh (gs :++: ef) x r -> Eff eh (gs :++: ef) r)
+  -> Eff eh (t ': ef) ~> Eff eh (gs :++: ef)
+interpretRecK hdl = loop
+  where
+    loop :: Eff eh (t ': ef) ~> Eff eh (gs :++: ef)
+    loop (Val x)  = pure x
+    loop (E u' q) =
+        case u' of
+            Right u'' -> case decomp u'' of
+                Right x -> hdl x k
+                Left  u -> E (Right $ weakens @gs u) (tsingleton k)
+            Left u -> E (Left $ hfmapUnion loop u) (tsingleton k)
+      where
+        k x = loop $ qApp q x
+{-# INLINE interpretRecK #-}
+
+interpretRecKSH
+  :: forall t gs hs s eh ef. (HFunctor t, KnownLen gs, KnownLen hs) =>
+     s
+  -> (forall x r. s -> t (Eff (hs :++: eh) (gs :++: ef)) x -> (s -> Arr (hs :++: eh) (gs :++: ef) x r) -> Eff (hs :++: eh) (gs :++: ef) r)
+  -> Eff (t ': eh) ef ~> Eff (hs :++: eh) (gs :++: ef)
+interpretRecKSH s' elb = loop s'
+  where
+    loop :: s -> Eff (t ': eh) ef ~> Eff (hs :++: eh) (gs :++: ef)
+    loop _ (Val x)  = pure x
+    loop s (E u' q) =
+        case u' of
+            Right u'' -> E (Right $ weakens @gs u'') (tsingleton (k s))
+            Left u'' -> case decompH u'' of
+                Right x -> elb s (hfmap (loop s) x) k
+                Left u -> E (Left $ hfmapUnion (loop s) . weakensH @hs $ u) (tsingleton (k s))
+      where
+        k s'' x = loop s'' $ qApp q x
+{-# INLINE interpretRecKSH #-}
+
+interpretRecKH
+  :: forall t gs hs eh ef. (HFunctor t, KnownLen gs, KnownLen hs) =>
+     (forall x r. t (Eff (hs :++: eh) (gs :++: ef)) x -> Arr (hs :++: eh) (gs :++: ef) x r -> Eff (hs :++: eh) (gs :++: ef) r)
+  -> Eff (t ': eh) ef ~> Eff (hs :++: eh) (gs :++: ef)
+interpretRecKH elb = loop
+  where
+    loop :: Eff (t ': eh) ef ~> Eff (hs :++: eh) (gs :++: ef)
+    loop (Val x)  = pure x
+    loop (E u' q) =
+        case u' of
+            Right u'' -> E (Right $ weakens @gs u'') (tsingleton k)
+            Left u'' -> case decompH u'' of
+                Right x -> elb (hfmap loop x) k
+                Left u -> E (Left $ hfmapUnion loop . weakensH @hs $ u) (tsingleton k)
+      where
+        k x = loop $ qApp q x
+{-# INLINE interpretRecKH #-}
+
+interpretKSHF
+  :: forall th tf gs s eh' ef w a. (HFunctor th, KnownLen gs) =>
+     s
+  -> (s -> a -> Eff eh' (gs :++: ef) w)
+  -> (forall x. s -> th (Eff '[th] (tf ': ef)) x -> (s -> Arr eh' (gs :++: ef) x w) -> Eff eh' (gs :++: ef) w)
+  -> (forall x. s -> tf x -> (s -> Arr eh' (gs :++: ef) x w) -> Eff eh' (gs :++: ef) w)
+  -> Eff '[th] (tf ': ef) a
+  -> Eff eh' (gs :++: ef) w
+interpretKSHF s' ret elb hdl = loop s'
+  where
+    loop s (Val x)  = ret s x
+    loop s (E u' q) =
+        case u' of
+            Right u'' -> case decomp u'' of
+                Right x -> hdl s x k
+                Left  u -> E (Right $ weakens @gs u) (tsingleton (k s))
+            Left u -> elb s (extractH u) k
+      where
+        k s'' x = loop s'' $ qApp q x
+{-# INLINE interpretKSHF #-}
+
+interposeKS
+  :: Member eff ef =>
+     s
+  -> (s -> a -> Eff '[] ef b)
+  -> (forall v. s -> eff v -> (s -> Arr '[] ef v b) -> Eff '[] ef b)
+  -> Eff '[] ef a
+  -> Eff '[] ef b
+interposeKS s' ret h = loop s'
   where
     loop s (Val x) = ret s x
-    loop s (E u q) = case prj u of
-        Just x -> h s x k
-        _      -> E u (tsingleton (k s))
+    loop s (E u q) = case u of
+        Right u' -> case prj u' of
+            Just x -> h s x k
+            _      -> E u (tsingleton (k s))
+        Left u' -> exhaustH u'
       where
         k s'' x = loop s'' $ qApp q x
-{-# INLINE interposeS #-}
+{-# INLINE interposeKS #-}
+
+interposeK
+  :: Member eff ef =>
+     (a -> Eff '[] ef b)
+  -> (forall v. eff v -> Arr '[] ef v b -> Eff '[] ef b)
+  -> Eff '[] ef a
+  -> Eff '[] ef b
+interposeK ret h = loop
+  where
+    loop (Val x) = ret x
+    loop (E u q) = case u of
+        Right u' -> case prj u' of
+            Just x -> h x k
+            _      -> E u (tsingleton k)
+        Left u' -> exhaustH u'
+      where
+        k x = loop $ qApp q x
+{-# INLINE interposeK #-}
+
+interposeRecKS
+  :: forall eff s eh ef. Member eff ef =>
+     s
+  -> (forall v b. s -> eff v -> (s -> Arr eh ef v b) -> Eff eh ef b)
+  -> Eff eh ef ~> Eff eh ef
+interposeRecKS s' h = loop s'
+  where
+    loop _ (Val x) = pure x
+    loop s (E u q) = case u of
+        Right u' -> case prj u' of
+            Just x -> h s x k
+            _      -> E u (tsingleton (k s))
+        Left _ -> E u (tsingleton (k s))
+      where
+        k s'' x = loop s'' $ qApp q x
+{-# INLINE interposeRecKS #-}
+
+interposeRecK
+  :: Member eff ef =>
+     (forall v b. eff v -> Arr eh ef v b -> Eff eh ef b)
+  -> Eff eh ef ~> Eff eh ef
+interposeRecK h = loop
+  where
+    loop (Val x) = pure x
+    loop (E u q) = case u of
+        Right u' -> case prj u' of
+            Just x -> h x k
+            _      -> E u (tsingleton k)
+        Left _ -> E u (tsingleton k)
+      where
+        k x = loop $ qApp q x
+{-# INLINE interposeRecK #-}
+
+interposeRecKSH
+  :: forall eff s eh ef. (MemberH eff eh, HFunctor eff) =>
+     s
+  -> (forall v x. s -> eff (Eff eh ef) v -> (s -> Arr eh ef v x) -> Eff eh ef x)
+  -> Eff eh ef ~> Eff eh ef
+interposeRecKSH s' h = loop s'
+  where
+    loop :: s -> Eff eh ef ~> Eff eh ef
+    loop _ (Val x) = pure x
+    loop s (E u q) = case u of
+        Right _ -> E u (tsingleton $ k s)
+        Left u' -> case prjH u' of
+            Just x -> h s x k
+            _ -> E (Left $ hfmapUnion (loop s) u') (tsingleton $ k s)
+      where
+        k s'' x = loop s'' $ qApp q x
+{-# INLINE interposeRecKSH #-}
+
+interposeRecKH
+  :: forall eff eh ef. (MemberH eff eh, HFunctor eff) =>
+     (forall v x. eff (Eff eh ef) v -> Arr eh ef v x -> Eff eh ef x)
+  -> Eff eh ef ~> Eff eh ef
+interposeRecKH h = loop
+  where
+    loop :: Eff eh ef ~> Eff eh ef
+    loop (Val x) = pure x
+    loop (E u q) = case u of
+        Right _ -> E u (tsingleton k)
+        Left u' -> case prjH u' of
+            Just x -> h x k
+            _ -> E (Left $ hfmapUnion loop u') (tsingleton k)
+      where
+        k x = loop $ qApp q x
+{-# INLINE interposeRecKH #-}
 
 -- | Embeds a less-constrained 'Eff' into a more-constrained one. Analogous to
 -- MTL's 'lift'.
-raise :: Eff effs a -> Eff (e ': effs) a
+raise :: Eff eh ef a -> Eff eh (e ': ef) a
 raise = loop
   where
+    loop :: Eff eh ef ~> Eff eh (e ': ef)
     loop (Val x) = pure x
-    loop (E u q) = E (weaken u) . tsingleton $ qComp q loop
+    loop (E u q) = E (bimap (hfmapUnion loop) weaken u) . tsingleton $ qComp q loop
 {-# INLINE raise #-}
+
+-- | Embeds a less-constrained 'Eff' into a more-constrained one. Analogous to
+-- MTL's 'lift'.
+raiseH :: Eff eh ef a -> Eff (e ': eh) ef a
+raiseH = loop
+  where
+    loop :: Eff eh ef ~> Eff (e ': eh) ef
+    loop (Val x) = pure x
+    loop (E u q) = E (first (hfmapUnion loop . weakenH) u) . tsingleton $ qComp q loop
+{-# INLINE raiseH #-}
 
 --------------------------------------------------------------------------------
                     -- Nondeterministic Choice --
@@ -361,10 +473,10 @@ data NonDet a where
   MZero :: NonDet a
   MPlus :: NonDet Bool
 
-instance Member NonDet effs => Alternative (Eff effs) where
+instance Member NonDet ef => Alternative (Eff eh ef) where
   empty = mzero
   (<|>) = mplus
 
-instance Member NonDet effs => MonadPlus (Eff effs) where
+instance Member NonDet ef => MonadPlus (Eff eh ef) where
   mzero       = send MZero
   mplus m1 m2 = send MPlus >>= \x -> if x then m1 else m2

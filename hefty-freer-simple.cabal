@@ -54,14 +54,14 @@ library
     Control.Monad.Freer
     Control.Monad.Freer.Coroutine
     Control.Monad.Freer.Error
-    Control.Monad.Freer.Fresh
+    -- Control.Monad.Freer.Fresh
     Control.Monad.Freer.Internal
     Control.Monad.Freer.NonDet
     Control.Monad.Freer.Reader
     Control.Monad.Freer.State
     Control.Monad.Freer.TH
-    Control.Monad.Freer.Trace
-    Control.Monad.Freer.Writer
+    -- Control.Monad.Freer.Trace
+    -- Control.Monad.Freer.Writer
     Data.FTCQueue
     Data.OpenUnion
     Data.OpenUnion.Internal

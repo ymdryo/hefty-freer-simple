@@ -30,7 +30,7 @@ module Control.Monad.Freer.Reader
     -- $localExample
   ) where
 
-import Control.Monad.Freer (Eff, Member, interpose, interpret, send)
+import Control.Monad.Freer (Eff, Member, interpose, interpret, send, interposeRec, interpretRec)
 
 -- | Represents shared immutable environment of type @(e :: *)@ which is made
 -- available to effectful computation.
@@ -38,35 +38,35 @@ data Reader r a where
   Ask :: Reader r r
 
 -- | Request a value of the environment.
-ask :: forall r effs. Member (Reader r) effs => Eff effs r
+ask :: forall r effs eh. Member (Reader r) effs => Eff eh effs r
 ask = send Ask
 
 -- | Request a value of the environment, and apply as selector\/projection
 -- function to it.
 asks
-  :: forall r effs a
+  :: forall r effs eh a
    . Member (Reader r) effs
   => (r -> a)
   -- ^ The selector\/projection function to be applied to the environment.
-  -> Eff effs a
+  -> Eff eh effs a
 asks f = f <$> ask
 
 -- | Handler for 'Reader' effects.
-runReader :: forall r effs a. r -> Eff (Reader r ': effs) a -> Eff effs a
-runReader r = interpret (\Ask -> pure r)
+runReader :: forall r effs eh a. r -> Eff eh (Reader r ': effs) a -> Eff eh effs a
+runReader r = interpretRec (\Ask -> pure r)
 
 -- | Locally rebind the value in the dynamic environment.
 --
 -- This function is like a relay; it is both an admin for 'Reader' requests,
 -- and a requestor of them.
 local
-  :: forall r effs a. Member (Reader r) effs
+  :: forall r effs eh a. Member (Reader r) effs
   => (r -> r)
-  -> Eff effs a
-  -> Eff effs a
+  -> Eff eh effs a
+  -> Eff eh effs a
 local f m = do
   r <- asks f
-  interpose @(Reader r) (\Ask -> pure r) m
+  interposeRec @(Reader r) (\Ask -> pure r) m
 
 -- $simpleReaderExample
 --
