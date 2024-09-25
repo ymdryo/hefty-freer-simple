@@ -1,32 +1,17 @@
 cabal-version: 2.4
-name: freer-simple
+name: hefty-freer-simple
 version: 1.2.1.2
 category: Control
 build-type: Simple
 
-synopsis: A friendly effect system for Haskell.
-description:
-  An implementation of an effect system for Haskell (a fork of
-  <http://hackage.haskell.org/package/freer-effects freer-effects>), which is
-  based on the work of Oleg Kiselyov et al.:
-  .
-    * <http://okmij.org/ftp/Haskell/extensible/more.pdf Freer Monads, More Extensible Effects>
-    * <http://okmij.org/ftp/Haskell/zseq.pdf Reflection without Remorse>
-    * <http://okmij.org/ftp/Haskell/extensible/exteff.pdf Extensible Effects>
-  .
-  The key features are:
-  .
-    * An efficient effect system for Haskell - as a library!
-    * Reimplementations of several common Haskell monad transformers as effects.
-    * Core components for defining your own Effects.
+synopsis: A PoC for performance measurement of Freer-based Hefty algebraic effects.
 
-author: Allele Dev, Ixcom Core Team, Alexis King, and other contributors
-maintainer: Alexis King <lexi.lambda@gmail.com>
-copyright: 2016 Allele Dev; 2017 Ixperta Solutions s.r.o.; 2017 Alexis King
-license: BSD-3-Clause
+author: freer-simple contributors (Allele Dev, Ixcom Core Team, Alexis King, and other contributors), and Sayo Koyoneda
+maintainer: Sayo Koyoneda <ymdfield@outlook.jp>
+copyright: 2016 Allele Dev; 2017 Ixperta Solutions s.r.o.; 2017 Alexis King; 2024 Sayo Koyoneda
+license: MPL-2.0 AND BSD-3-Clause
 license-file: LICENSE
-homepage: https://github.com/lexi-lambda/freer-simple
-bug-reports: https://github.com/lexi-lambda/freer-simple/issues
+bug-reports: https://github.com/ymdryo/freer-simple/issues
 
 extra-source-files:
   CHANGELOG.md
@@ -34,7 +19,7 @@ extra-source-files:
 
 source-repository head
   type: git
-  location: https://github.com/lexi-lambda/freer-simple
+  location: https://github.com/ymdryo/freer-simple
 
 common common
   ghc-options:
@@ -84,7 +69,7 @@ library
   build-depends:
     , natural-transformation >= 0.2
     , transformers-base
-    , template-haskell >= 2.11 && < 2.19
+    , template-haskell >= 2.11 && < 2.23
 
 executable freer-simple-examples
   import: common
