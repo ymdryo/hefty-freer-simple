@@ -1,4 +1,5 @@
 {-# LANGUAGE AllowAmbiguousTypes #-}
+{-# LANGUAGE BlockArguments #-}
 
 -- |
 -- Module:       Control.Monad.Freer.State
@@ -32,6 +33,7 @@ module Control.Monad.Freer.State
     -- * State Handlers
   , runState
   , runStateRec
+  , runStateIO
   , evalState
   , execState
 
@@ -42,8 +44,11 @@ module Control.Monad.Freer.State
 
 import Data.Proxy (Proxy)
 
-import Control.Monad.Freer (Eff, Member, send, interposeKS, interpretKS, interpretRecKS)
+import Control.Monad.Freer (Eff, Member, send, interposeKS, interpretKS, interpretRecKS, interpretRec, LastMember)
 import Control.Monad.Freer.Internal (Arr)
+import Data.IORef (newIORef, readIORef, writeIORef)
+import Control.Monad.IO.Class (liftIO)
+import Data.Function ((&))
 
 -- | Strict 'State' effects: one can either 'Get' values or 'Put' them.
 data State s r where
@@ -73,6 +78,16 @@ runState :: forall s effs a. s -> Eff '[] (State s ': effs) a -> Eff '[] effs (a
 runState s0 = interpretKS @_ @'[] s0 (\s x -> pure (x, s)) $ \s x k -> case x of
   Get -> k s s
   Put s' -> k s' ()
+
+runStateIO :: forall s effs eh a. LastMember IO effs => s -> Eff eh (State s ': effs) a -> Eff eh effs (a, s)
+runStateIO s0 m = do
+  ref <- liftIO $ newIORef s0
+  a <- m & interpretRec \case
+    Get -> liftIO $ readIORef ref
+    Put s' -> liftIO $ writeIORef ref s'
+  s' <- liftIO $ readIORef ref
+  pure (a,s')
+
 
 -- | Handler for 'State' effects.
 runStateRec :: forall s effs eh a. s -> Eff eh (State s ': effs) a -> Eff eh effs a
