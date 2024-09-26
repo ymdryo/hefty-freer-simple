@@ -44,7 +44,7 @@ module Control.Monad.Freer.State
 
 import Data.Proxy (Proxy)
 
-import Control.Monad.Freer (Eff, Member, send, interposeKS, interpretKS, interpretRecKS, interpretRec, LastMember)
+import Control.Monad.Freer (Eff, Member, send, interposeKS, interpretKS, interpretRecKS, interpretRec, LastMember, interpret)
 import Control.Monad.Freer.Internal (Arr)
 import Data.IORef (newIORef, readIORef, writeIORef)
 import Control.Monad.IO.Class (liftIO)
@@ -79,10 +79,10 @@ runState s0 = interpretKS @_ @'[] s0 (\s x -> pure (x, s)) $ \s x k -> case x of
   Get -> k s s
   Put s' -> k s' ()
 
-runStateIO :: forall s effs eh a. LastMember IO effs => s -> Eff eh (State s ': effs) a -> Eff eh effs (a, s)
+runStateIO :: forall s effs a. LastMember IO effs => s -> Eff '[] (State s ': effs) a -> Eff '[] effs (a, s)
 runStateIO s0 m = do
   ref <- liftIO $ newIORef s0
-  a <- m & interpretRec \case
+  a <- m & interpret \case
     Get -> liftIO $ readIORef ref
     Put s' -> liftIO $ writeIORef ref s'
   s' <- liftIO $ readIORef ref
