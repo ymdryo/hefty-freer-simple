@@ -31,6 +31,7 @@ module Control.Monad.Freer.State
 
     -- * State Handlers
   , runState
+  , runStateRec
   , evalState
   , execState
 
@@ -41,7 +42,7 @@ module Control.Monad.Freer.State
 
 import Data.Proxy (Proxy)
 
-import Control.Monad.Freer (Eff, Member, send, interposeKS, interpretKS)
+import Control.Monad.Freer (Eff, Member, send, interposeKS, interpretKS, interpretRecKS)
 import Control.Monad.Freer.Internal (Arr)
 
 -- | Strict 'State' effects: one can either 'Get' values or 'Put' them.
@@ -70,6 +71,12 @@ gets f = f <$> get
 -- | Handler for 'State' effects.
 runState :: forall s effs a. s -> Eff '[] (State s ': effs) a -> Eff '[] effs (a, s)
 runState s0 = interpretKS @_ @'[] s0 (\s x -> pure (x, s)) $ \s x k -> case x of
+  Get -> k s s
+  Put s' -> k s' ()
+
+-- | Handler for 'State' effects.
+runStateRec :: forall s effs eh a. s -> Eff eh (State s ': effs) a -> Eff eh effs a
+runStateRec s0 = interpretRecKS @_ @'[] s0 $ \s x k -> case x of
   Get -> k s s
   Put s' -> k s' ()
 
